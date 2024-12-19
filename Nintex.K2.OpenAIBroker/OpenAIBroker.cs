@@ -23,6 +23,7 @@ namespace Nintex.K2
         private const string CONFIG_CACHE_DURATION = "CacheDuration";
         private const string CONFIG_RETURN_AS_LIST = "ReturnAsList";
         private const string CONFIG_OPENAI_ENDPOINT = "OpenAIEndpoint";
+        private const string CONFIG_CHAT_TOPIC = "Chat Topic";
 
         // Method Names
         private const string METHOD_GET_RESPONSE = "GetResponse";
@@ -32,12 +33,13 @@ namespace Nintex.K2
         {
             this.Service.ServiceConfiguration.Add(CONFIG_OPENAI_KEY, true, "Your OpenAI API Key");
             this.Service.ServiceConfiguration.Add(CONFIG_OPENAI_SYSTEM_PROMPT, true, "ONLY return minified JSON to use the least tokens possible.");
+            this.Service.ServiceConfiguration.Add(CONFIG_CHAT_TOPIC, true, "e.g. Leave Request Policy");
             this.Service.ServiceConfiguration.Add(CONFIG_OPENAI_MODEL, true, "gpt-4-turbo");
             this.Service.ServiceConfiguration.Add(CONFIG_OPENAI_ENDPOINT, true, "https://api.openai.com/v1/chat/completions");
             this.Service.ServiceConfiguration.Add(CONFIG_JSON_PROPERTIES, true, "Comma-separated list of JSON properties to return from inside the response.choice[0].content object e.g. id,Message[0].item.");
             this.Service.ServiceConfiguration.Add(CONFIG_USE_LITEDB_CACHE, true, "true");
-            this.Service.ServiceConfiguration.Add(CONFIG_CACHE_DURATION, false, "Cache Duration: 1sec, 1min, 1day, 1mon, 1yr etc (defauts to 1day)");
-            this.Service.ServiceConfiguration.Add(CONFIG_RETURN_AS_LIST, false, "false");
+            this.Service.ServiceConfiguration.Add(CONFIG_CACHE_DURATION, true, "1yr");
+            this.Service.ServiceConfiguration.Add(CONFIG_RETURN_AS_LIST, true, "false");
 
             return base.GetConfigSection();
         }
@@ -45,10 +47,10 @@ namespace Nintex.K2
         public override string DescribeSchema()
         {
             // Use the Service Instance Name to name the service and objects
-            string serviceInstanceName = this.Service.Name;
+            string serviceInstanceName = "Changeme_MyProject_OpenAI";
 
             this.Service.Name = serviceInstanceName;
-            this.Service.MetaData.DisplayName = "OpenAI Dynamic SmartObject Service for " + serviceInstanceName;
+            this.Service.MetaData.DisplayName = serviceInstanceName;
 
             // Retrieve ReturnAsList setting
             bool returnAsList = false;
@@ -119,6 +121,7 @@ namespace Nintex.K2
         {
             string apiKey = this.Service.ServiceConfiguration[CONFIG_OPENAI_KEY].ToString();
             string systemPrompt = this.Service.ServiceConfiguration[CONFIG_OPENAI_SYSTEM_PROMPT].ToString();
+            systemPrompt += "\nDecline to responsd and give reason if the request is not on the topic: " + this.Service.ServiceConfiguration[CONFIG_CHAT_TOPIC].ToString();
             string model = this.Service.ServiceConfiguration[CONFIG_OPENAI_MODEL].ToString();
             string endpointUrl = this.Service.ServiceConfiguration[CONFIG_OPENAI_ENDPOINT].ToString();
             var jsonProps = GetJsonPropertiesFromConfig();
