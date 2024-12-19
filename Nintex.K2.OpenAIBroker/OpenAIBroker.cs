@@ -390,10 +390,22 @@ namespace Nintex.K2
         // LiteDB cache logic
         private class CacheEntry
         {
-            public string Id { get; set; } // key: userPrompt
+            public string Id { get; set; } // key: hashed userPrompt
             public string Response { get; set; }
             public DateTime ExpiresAt { get; set; }
         }
+
+        private string GetHashedKey(string input)
+        {
+            using (var sha256 = System.Security.Cryptography.SHA256.Create())
+            {
+                var bytes = Encoding.UTF8.GetBytes(input);
+                var hash = sha256.ComputeHash(bytes);
+                return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+            }
+        }
+
+
 
         private string GetDbFilePath()
         {
@@ -404,18 +416,18 @@ namespace Nintex.K2
 
         private string GetCachedResponse(string userPrompt)
         {
+            string hashedKey = GetHashedKey(userPrompt);
             using (var db = new LiteDatabase($"filename={GetDbFilePath()};mode=Shared"))
             {
                 var col = db.GetCollection<CacheEntry>("cache");
-                var entry = col.FindById(userPrompt);
+                var entry = col.FindById(hashedKey);
                 if (entry != null && entry.ExpiresAt > DateTime.UtcNow)
                 {
                     return entry.Response;
                 }
                 else if (entry != null && entry.ExpiresAt <= DateTime.UtcNow)
                 {
-                    // expired, remove it
-                    col.Delete(userPrompt);
+                    col.Delete(hashedKey);
                 }
             }
             return null;
@@ -423,12 +435,13 @@ namespace Nintex.K2
 
         private void CacheResponse(string userPrompt, string response, TimeSpan duration)
         {
+            string hashedKey = GetHashedKey(userPrompt);
             using (var db = new LiteDatabase($"filename={GetDbFilePath()};mode=Shared"))
             {
                 var col = db.GetCollection<CacheEntry>("cache");
                 var entry = new CacheEntry
                 {
-                    Id = userPrompt,
+                    Id = hashedKey,
                     Response = response,
                     ExpiresAt = DateTime.UtcNow.Add(duration)
                 };
