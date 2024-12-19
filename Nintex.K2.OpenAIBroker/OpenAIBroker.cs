@@ -134,6 +134,11 @@ namespace Nintex.K2
             bool returnAsList = false;
             bool.TryParse(this.Service.ServiceConfiguration[CONFIG_RETURN_AS_LIST]?.ToString(), out returnAsList);
 
+            if (returnAsList)
+            {
+                systemPrompt += "\nIf returning a list, do so as a JSON array";
+            }
+
             ServiceObject serviceObject = Service.ServiceObjects[0];
             var currentMethod = serviceObject.Methods[0];
 
