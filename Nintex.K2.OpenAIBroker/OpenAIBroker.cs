@@ -22,6 +22,7 @@ namespace Nintex.K2
         private const string CONFIG_USE_LITEDB_CACHE = "UseLiteDBCache";
         private const string CONFIG_CACHE_DURATION = "CacheDuration";
         private const string CONFIG_RETURN_AS_LIST = "ReturnAsList";
+        private const string CONFIG_OPENAI_ENDPOINT = "OpenAIEndpoint";
 
         // Method Names
         private const string METHOD_GET_RESPONSE = "GetResponse";
@@ -32,10 +33,11 @@ namespace Nintex.K2
             this.Service.ServiceConfiguration.Add(CONFIG_OPENAI_KEY, true, "Your OpenAI API Key");
             this.Service.ServiceConfiguration.Add(CONFIG_OPENAI_SYSTEM_PROMPT, true, "ONLY return minified JSON to use the least tokens possible.");
             this.Service.ServiceConfiguration.Add(CONFIG_OPENAI_MODEL, true, "gpt-4-turbo");
+            this.Service.ServiceConfiguration.Add(CONFIG_OPENAI_ENDPOINT, true, "https://api.openai.com/v1/chat/completions");
             this.Service.ServiceConfiguration.Add(CONFIG_JSON_PROPERTIES, true, "Comma-separated list of JSON properties to return from inside the response.choice[0].content object e.g. id,Message[0].item.");
-            this.Service.ServiceConfiguration.Add(CONFIG_USE_LITEDB_CACHE, false, "Use LiteDB Cache? true|false");
-            this.Service.ServiceConfiguration.Add(CONFIG_CACHE_DURATION, false, "Cache Duration e.g. 1sec, 1min, 1day, 1mon, 1yr");
-            this.Service.ServiceConfiguration.Add(CONFIG_RETURN_AS_LIST, false, "ReturnAsList true|false");
+            this.Service.ServiceConfiguration.Add(CONFIG_USE_LITEDB_CACHE, true, "true");
+            this.Service.ServiceConfiguration.Add(CONFIG_CACHE_DURATION, false, "Cache Duration: 1sec, 1min, 1day, 1mon, 1yr etc (defauts to 1day)");
+            this.Service.ServiceConfiguration.Add(CONFIG_RETURN_AS_LIST, false, "false");
 
             return base.GetConfigSection();
         }
@@ -51,7 +53,7 @@ namespace Nintex.K2
             // Retrieve ReturnAsList setting
             bool returnAsList = false;
             bool.TryParse(this.Service.ServiceConfiguration[CONFIG_RETURN_AS_LIST].ToString(), out returnAsList);
-            
+
 
             // Create the Service Object dynamically
             var so = new ServiceObject();
@@ -65,13 +67,21 @@ namespace Nintex.K2
             getResponseMethod.Name = METHOD_GET_RESPONSE;
             getResponseMethod.MetaData.DisplayName = "Get OpenAI Response";
             getResponseMethod.Type = returnAsList ? MethodType.List : MethodType.Read;
-            
+
             // Input property: User Prompt
             var userPromptProperty = new Property("UserPrompt");
             userPromptProperty.Type = "Memo";
             userPromptProperty.MetaData.DisplayName = "User Prompt";
             so.Properties.Add(userPromptProperty);
             getResponseMethod.InputProperties.Add(userPromptProperty);
+
+            // Input property: RefreshCache (boolean)
+            var refreshCacheProperty = new Property("RefreshCache");
+            refreshCacheProperty.Type = "Boolean";
+            refreshCacheProperty.MetaData.DisplayName = "Refresh Cache";
+            refreshCacheProperty.Value = "false"; // default to false
+            so.Properties.Add(refreshCacheProperty);
+            getResponseMethod.InputProperties.Add(refreshCacheProperty);
 
             // Always return the full response
             var fullResponseProp = new Property("FullResponse");
@@ -110,6 +120,7 @@ namespace Nintex.K2
             string apiKey = this.Service.ServiceConfiguration[CONFIG_OPENAI_KEY].ToString();
             string systemPrompt = this.Service.ServiceConfiguration[CONFIG_OPENAI_SYSTEM_PROMPT].ToString();
             string model = this.Service.ServiceConfiguration[CONFIG_OPENAI_MODEL].ToString();
+            string endpointUrl = this.Service.ServiceConfiguration[CONFIG_OPENAI_ENDPOINT].ToString();
             var jsonProps = GetJsonPropertiesFromConfig();
 
             bool useCache = false;
@@ -123,7 +134,7 @@ namespace Nintex.K2
 
             ServiceObject serviceObject = Service.ServiceObjects[0];
             var currentMethod = serviceObject.Methods[0];
-            
+
             Property[] inputs = currentMethod.InputProperties.Select(ip => serviceObject.Properties[ip]).ToArray();
             Property[] outputs = currentMethod.ReturnProperties.Select(rp => serviceObject.Properties[rp]).ToArray();
 
@@ -132,9 +143,12 @@ namespace Nintex.K2
                 case METHOD_GET_RESPONSE:
                     {
                         string userPrompt = GetInputValue(inputs, "UserPrompt");
+                        bool refreshCache = false;
+                        bool.TryParse(GetInputValue(inputs, "RefreshCache"), out refreshCache);
+
                         string cachedResponse = null;
 
-                        if (useCache)
+                        if (useCache && !refreshCache)
                         {
                             cachedResponse = GetCachedResponse(userPrompt);
                         }
@@ -176,7 +190,7 @@ namespace Nintex.K2
                         else
                         {
                             // Call the OpenAI API
-                            var responseJson = CallOpenAIAPI(apiKey, systemPrompt, model, userPrompt);
+                            var responseJson = CallOpenAIAPI(apiKey, systemPrompt, model, userPrompt, endpointUrl);
 
                             // Parse response to get content
                             JObject jsonObj;
@@ -198,7 +212,7 @@ namespace Nintex.K2
 
                             finalContentJson = contentString;
 
-                            // If caching is enabled, store the result
+                            // If caching is enabled and not explicitly refreshing, store the result
                             if (useCache && !string.IsNullOrEmpty(finalContentJson))
                             {
                                 CacheResponse(userPrompt, finalContentJson, cacheDuration);
@@ -338,7 +352,7 @@ namespace Nintex.K2
             }
         }
 
-        private string CallOpenAIAPI(string apiKey, string systemPrompt, string model, string userPrompt)
+        private string CallOpenAIAPI(string apiKey, string systemPrompt, string model, string userPrompt, string endpointUrl)
         {
             var requestBody = new
             {
@@ -358,7 +372,7 @@ namespace Nintex.K2
                 client.DefaultRequestHeaders.Add("User-Agent", "K2OpenAIBroker/1.0");
 
                 var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
-                var response = client.PostAsync("https://api.openai.com/v1/chat/completions", content).Result;
+                var response = client.PostAsync(endpointUrl, content).Result;
                 response.EnsureSuccessStatusCode();
 
                 var responseContent = response.Content.ReadAsStringAsync().Result;
