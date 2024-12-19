@@ -47,8 +47,7 @@ namespace Nintex.K2
         public override string DescribeSchema()
         {
             // Use the Service Instance Name to name the service and objects
-            string serviceInstanceName = "Changeme_MyProject_OpenAI";
-
+            string serviceInstanceName = this.Service.Name;
             this.Service.Name = serviceInstanceName;
             this.Service.MetaData.DisplayName = serviceInstanceName;
 
