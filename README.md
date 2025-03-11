@@ -74,6 +74,8 @@ Then just provide `myPropertyOutput,otherPropertyOutput` to the ReturnProperties
 
 The cache is quite simple is hashes the input prompt and caches it.  When a request comes in, it hashes it, checks to see if the hash exists, and if so, returns the caches one.
 
+This is particularly useful when using the smartobject in a workflow as a reference where many calls maybe made with the identical propmt.
+
 ## Using the SmartObjects
 
 Once the service instance is created, K2 will generate SmartObjects that interact with the API. These SmartObjects can be used in workflows to send requests and receive responses.
