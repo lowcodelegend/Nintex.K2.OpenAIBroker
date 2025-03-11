@@ -18,7 +18,8 @@ namespace Nintex.K2
         private const string CONFIG_OPENAI_KEY = "OpenAIKey";
         private const string CONFIG_OPENAI_SYSTEM_PROMPT = "OpenAISystemPrompt";
         private const string CONFIG_OPENAI_MODEL = "OpenAIModel";
-        private const string CONFIG_JSON_PROPERTIES = "JsonPropertiesToExtract"; // Comma-separated list
+        private const string CONFIG_INPUT_PROPS_LIST = "InputPropertiesList"; // Comma-separated list e.g. prompt, or job,city,currency
+        private const string CONFIG_RETURN_PROPS_LIST = "ReturnPropertiesList"; // Comma-separated list
         private const string CONFIG_USE_LITEDB_CACHE = "UseLiteDBCache";
         private const string CONFIG_CACHE_DURATION = "CacheDuration";
         private const string CONFIG_RETURN_AS_LIST = "ReturnAsList";
@@ -32,11 +33,12 @@ namespace Nintex.K2
         public override string GetConfigSection()
         {
             this.Service.ServiceConfiguration.Add(CONFIG_OPENAI_KEY, true, "Your OpenAI API Key");
-            this.Service.ServiceConfiguration.Add(CONFIG_OPENAI_SYSTEM_PROMPT, true, "ONLY return minified JSON to use the least tokens possible.");
+            this.Service.ServiceConfiguration.Add(CONFIG_OPENAI_SYSTEM_PROMPT, true, "Describe the purpose like: validate if the request meets the policy, give reasons as to why or why not.");
             this.Service.ServiceConfiguration.Add(CONFIG_CHAT_TOPIC, true, "e.g. Leave Request Policy");
-            this.Service.ServiceConfiguration.Add(CONFIG_OPENAI_MODEL, true, "gpt-4-turbo");
+            this.Service.ServiceConfiguration.Add(CONFIG_OPENAI_MODEL, true, "gpt-4o");
             this.Service.ServiceConfiguration.Add(CONFIG_OPENAI_ENDPOINT, true, "https://api.openai.com/v1/chat/completions");
-            this.Service.ServiceConfiguration.Add(CONFIG_JSON_PROPERTIES, true, "Comma-separated list of JSON properties to return from inside the response.choice[0].content object e.g. id,Message[0].item.");
+            this.Service.ServiceConfiguration.Add(CONFIG_INPUT_PROPS_LIST, true, "e.g. prompt or requestType,requestStartate,requestEndDate,policy,currentDate, requestedLeaveType, additionalConsiderations");
+            this.Service.ServiceConfiguration.Add(CONFIG_RETURN_PROPS_LIST, true, "e.g. response or meetsPolicy,reason");
             this.Service.ServiceConfiguration.Add(CONFIG_USE_LITEDB_CACHE, true, "true");
             this.Service.ServiceConfiguration.Add(CONFIG_CACHE_DURATION, true, "1yr");
             this.Service.ServiceConfiguration.Add(CONFIG_RETURN_AS_LIST, true, "false");
@@ -46,37 +48,36 @@ namespace Nintex.K2
 
         public override string DescribeSchema()
         {
-            // Use the Service Instance Name to name the service and objects
             string serviceInstanceName = this.Service.Name;
             this.Service.Name = serviceInstanceName;
             this.Service.MetaData.DisplayName = serviceInstanceName;
 
-            // Retrieve ReturnAsList setting
             bool returnAsList = false;
             bool.TryParse(this.Service.ServiceConfiguration[CONFIG_RETURN_AS_LIST].ToString(), out returnAsList);
+            string inputPropsList = this.Service.ServiceConfiguration[CONFIG_INPUT_PROPS_LIST].ToString();
+            string returnPropsList = this.Service.ServiceConfiguration[CONFIG_RETURN_PROPS_LIST].ToString();
 
-
-            // Create the Service Object dynamically
             var so = new ServiceObject();
-            // Name the service object and smartobject after the instance name for uniqueness
             so.Name = serviceInstanceName + "_OpnAIResp";
             so.MetaData.DisplayName = serviceInstanceName;
             so.Active = true;
 
-            // "GetResponse" method
             var getResponseMethod = new Method();
             getResponseMethod.Name = METHOD_GET_RESPONSE;
             getResponseMethod.MetaData.DisplayName = "Get OpenAI Response";
             getResponseMethod.Type = returnAsList ? MethodType.List : MethodType.Read;
 
-            // Input property: User Prompt
-            var userPromptProperty = new Property("UserPrompt");
-            userPromptProperty.Type = "Memo";
-            userPromptProperty.MetaData.DisplayName = "User Prompt";
-            so.Properties.Add(userPromptProperty);
-            getResponseMethod.InputProperties.Add(userPromptProperty);
+            // Input props
+            var inputProps = GetJsonPropertiesFromConfig(inputPropsList);
+            foreach (var propName in inputProps)
+            {
+                var p = new Property(propName);
+                p.Type = "Text";
+                p.MetaData.DisplayName = propName;
+                so.Properties.Add(p);
+                getResponseMethod.InputProperties.Add(p);
+            }
 
-            // Input property: RefreshCache (boolean)
             var refreshCacheProperty = new Property("RefreshCache");
             refreshCacheProperty.Type = "Boolean";
             refreshCacheProperty.MetaData.DisplayName = "Refresh Cache";
@@ -91,9 +92,9 @@ namespace Nintex.K2
             so.Properties.Add(fullResponseProp);
             getResponseMethod.ReturnProperties.Add(fullResponseProp);
 
-            // Create properties from the CSV config
-            var jsonProps = GetJsonPropertiesFromConfig();
-            foreach (var propName in jsonProps)
+            // Return props
+            var returnProps = GetJsonPropertiesFromConfig(returnPropsList);
+            foreach (var propName in returnProps)
             {
                 var p = new Property(propName);
                 p.Type = "Text";
@@ -104,7 +105,6 @@ namespace Nintex.K2
 
             so.Methods.Add(getResponseMethod);
 
-            // Add InvalidateCache method (no inputs)
             var invalidateCacheMethod = new Method();
             invalidateCacheMethod.Name = METHOD_INVALIDATE_CACHE;
             invalidateCacheMethod.MetaData.DisplayName = "Invalidate Cache";
@@ -119,13 +119,15 @@ namespace Nintex.K2
         public override void Execute()
         {
             string apiKey = this.Service.ServiceConfiguration[CONFIG_OPENAI_KEY].ToString();
-            string systemPrompt = this.Service.ServiceConfiguration[CONFIG_OPENAI_SYSTEM_PROMPT].ToString();
-            systemPrompt += "\nDecline to responsd and give reason if the request is not on the topic: " + this.Service.ServiceConfiguration[CONFIG_CHAT_TOPIC].ToString();
+            string systemPrompt = this.Service.ServiceConfiguration[CONFIG_OPENAI_SYSTEM_PROMPT].ToString();            
             string model = this.Service.ServiceConfiguration[CONFIG_OPENAI_MODEL].ToString();
             string endpointUrl = this.Service.ServiceConfiguration[CONFIG_OPENAI_ENDPOINT].ToString();
-            var jsonProps = GetJsonPropertiesFromConfig();
+            var inputPropsList = GetJsonPropertiesFromConfig(this.Service.ServiceConfiguration[CONFIG_INPUT_PROPS_LIST].ToString());
+            var inputPropsJson = ParseCSVToJson(this.Service.ServiceConfiguration[CONFIG_INPUT_PROPS_LIST].ToString());
+            var returnPropsList = GetJsonPropertiesFromConfig(this.Service.ServiceConfiguration[CONFIG_RETURN_PROPS_LIST].ToString());
+            var ReturnListjson = ParseCSVToJson(this.Service.ServiceConfiguration[CONFIG_RETURN_PROPS_LIST].ToString());
 
-            bool useCache = false;
+            var useCache = false;
             bool.TryParse(this.Service.ServiceConfiguration[CONFIG_USE_LITEDB_CACHE]?.ToString(), out useCache);
 
             string cacheDurationStr = this.Service.ServiceConfiguration[CONFIG_CACHE_DURATION]?.ToString() ?? "1day";
@@ -133,11 +135,19 @@ namespace Nintex.K2
 
             bool returnAsList = false;
             bool.TryParse(this.Service.ServiceConfiguration[CONFIG_RETURN_AS_LIST]?.ToString(), out returnAsList);
-
+            
+            systemPrompt += "\nDecline to responsd and give reason if the request is not on the topic: " + this.Service.ServiceConfiguration[CONFIG_CHAT_TOPIC].ToString();
+            systemPrompt += "\nReturn only JSON.  Return the JSON minified to save tokens.";
             if (returnAsList)
             {
-                systemPrompt += "\nIf returning a list, do so as a JSON array";
+                systemPrompt += $"\nReturn as JSON array of the return list object: [{ReturnListjson}]";
             }
+            else
+            {
+                systemPrompt += $"\nReturn a single record JSON object like this: {ReturnListjson}";
+            }
+
+
 
             ServiceObject serviceObject = Service.ServiceObjects[0];
             var currentMethod = serviceObject.Methods[0];
@@ -149,11 +159,14 @@ namespace Nintex.K2
             {
                 case METHOD_GET_RESPONSE:
                     {
-                        string userPrompt = GetInputValue(inputs, "UserPrompt");
-                        bool refreshCache = false;
+                        var userPrompt = String.Empty;
+                        var cachedResponse = String.Empty;
+                        var refreshCache = false;
+                        
                         bool.TryParse(GetInputValue(inputs, "RefreshCache"), out refreshCache);
 
-                        string cachedResponse = null;
+                        //map input properties in smo to userPrompt
+                        userPrompt = MapInputPropertiesToJson(inputPropsJson, inputs);
 
                         if (useCache && !refreshCache)
                         {
@@ -168,7 +181,7 @@ namespace Nintex.K2
                             if (returnAsList)
                             {
                                 // Handle as list
-                                HandleListResponse(finalContentJson, jsonProps, outputs, serviceObject);
+                                HandleListResponse(finalContentJson, returnPropsList, outputs, serviceObject);
                             }
                             else
                             {
@@ -179,7 +192,7 @@ namespace Nintex.K2
                                 try
                                 {
                                     JObject innerJson = JObject.Parse(finalContentJson);
-                                    foreach (var propName in jsonProps)
+                                    foreach (var propName in returnPropsList)
                                     {
                                         JToken valToken = innerJson.SelectToken(propName);
                                         string val = valToken != null ? valToken.ToString() : string.Empty;
@@ -228,7 +241,7 @@ namespace Nintex.K2
                             if (returnAsList)
                             {
                                 // Handle as list
-                                HandleListResponse(finalContentJson, jsonProps, outputs, serviceObject);
+                                HandleListResponse(finalContentJson, returnPropsList, outputs, serviceObject);
                             }
                             else
                             {
@@ -239,7 +252,7 @@ namespace Nintex.K2
                                 try
                                 {
                                     JObject innerJson = JObject.Parse(finalContentJson);
-                                    foreach (var propName in jsonProps)
+                                    foreach (var propName in returnPropsList)
                                     {
                                         JToken valToken = innerJson.SelectToken(propName);
                                         string val = valToken != null ? valToken.ToString() : string.Empty;
@@ -263,6 +276,20 @@ namespace Nintex.K2
                         break;
                     }
             }
+        }
+
+        private string MapInputPropertiesToJson(string inputPropsJsonStr, Property[] inputs)
+        {
+            var mappedProperties = String.Empty;
+            var inputPropsJsonObj = JObject.Parse(inputPropsJsonStr);
+
+            foreach (var input in inputs)
+            {
+                if (inputPropsJsonObj.ContainsKey(input.Name)) {
+                    inputPropsJsonObj[input.Name] = input.Value?.ToString() ?? "";
+                }
+            }
+            return inputPropsJsonObj.ToString() ?? "";
         }
 
         private void HandleListResponse(string finalContentJson, List<string> jsonProps, Property[] outputs, ServiceObject so)
@@ -328,14 +355,13 @@ namespace Nintex.K2
             }
         }
 
-        public List<string> GetJsonPropertiesFromConfig()
+        public List<string> GetJsonPropertiesFromConfig(string propertiesList)
         {
             var props = new List<string>();
-
-            string raw = this.Service.ServiceConfiguration[CONFIG_JSON_PROPERTIES]?.ToString();
-            if (!string.IsNullOrWhiteSpace(raw))
+          
+            if (!string.IsNullOrWhiteSpace(propertiesList))
             {
-                props = raw.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                props = propertiesList.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
                            .Select(p => p.Trim())
                            .ToList();
             }
@@ -404,8 +430,6 @@ namespace Nintex.K2
                 return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
             }
         }
-
-
 
         private string GetDbFilePath()
         {
@@ -508,6 +532,28 @@ namespace Nintex.K2
             }
             return 1;
         }
+
+        private string ParseCSVToJson(string csv)
+        {
+            var json = new StringBuilder();
+            json.Append("{ ");
+
+            // Split the CSV string on commas and trim any whitespace.
+            var tokens = csv.Split(',');
+            for (int i = 0; i < tokens.Length; i++)
+            {
+                var token = tokens[i].Trim();
+                json.Append($"\"{token}\": \"string\"");
+                if (i < tokens.Length - 1)
+                {
+                    json.Append(", ");
+                }
+            }
+
+            json.Append(" }");
+            return json.ToString();
+        }
+
 
         public override void Extend()
         {
