@@ -78,12 +78,21 @@ namespace Nintex.K2
                 getResponseMethod.InputProperties.Add(p);
             }
 
+            //Cache Refresh property
             var refreshCacheProperty = new Property("RefreshCache");
             refreshCacheProperty.Type = "Boolean";
             refreshCacheProperty.MetaData.DisplayName = "Refresh Cache";
             refreshCacheProperty.Value = "false"; // default to false
             so.Properties.Add(refreshCacheProperty);
             getResponseMethod.InputProperties.Add(refreshCacheProperty);
+
+            //Input file
+            var fileAttachment = new Property("FileAttachement");
+            fileAttachment.SoType = SoType.File;
+            fileAttachment.MetaData.DisplayName = "File Attachment";
+            fileAttachment.MetaData.Description = "See the documentation!  pdf, docx, jpg, png, csv xlsx.  20Mb, 2000px x 768px max";
+            so.Properties.Add(fileAttachment);
+            getResponseMethod.InputProperties.Add(fileAttachment);
 
             // Always return the full response
             var fullResponseProp = new Property("FullResponse");
@@ -119,7 +128,7 @@ namespace Nintex.K2
         public override void Execute()
         {
             string apiKey = this.Service.ServiceConfiguration[CONFIG_OPENAI_KEY].ToString();
-            string systemPrompt = this.Service.ServiceConfiguration[CONFIG_OPENAI_SYSTEM_PROMPT].ToString();            
+            string systemPrompt = this.Service.ServiceConfiguration[CONFIG_OPENAI_SYSTEM_PROMPT].ToString();
             string model = this.Service.ServiceConfiguration[CONFIG_OPENAI_MODEL].ToString();
             string endpointUrl = this.Service.ServiceConfiguration[CONFIG_OPENAI_ENDPOINT].ToString();
             var inputPropsList = GetJsonPropertiesFromConfig(this.Service.ServiceConfiguration[CONFIG_INPUT_PROPS_LIST].ToString());
@@ -135,8 +144,9 @@ namespace Nintex.K2
 
             bool returnAsList = false;
             bool.TryParse(this.Service.ServiceConfiguration[CONFIG_RETURN_AS_LIST]?.ToString(), out returnAsList);
-            
-            systemPrompt += "\nDecline to responsd and give reason if the request is not on the topic: " + this.Service.ServiceConfiguration[CONFIG_CHAT_TOPIC].ToString();
+
+            systemPrompt += "\nDecline to responsd and give reason if the request is not on the topic: "
+                + this.Service.ServiceConfiguration[CONFIG_CHAT_TOPIC].ToString();
             systemPrompt += "\nReturn only JSON.  Return the JSON minified to save tokens.";
             if (returnAsList)
             {
@@ -146,8 +156,6 @@ namespace Nintex.K2
             {
                 systemPrompt += $"\nReturn a single record JSON object like this: {ReturnListjson}";
             }
-
-
 
             ServiceObject serviceObject = Service.ServiceObjects[0];
             var currentMethod = serviceObject.Methods[0];
@@ -159,15 +167,60 @@ namespace Nintex.K2
             {
                 case METHOD_GET_RESPONSE:
                     {
-                        var userPrompt = String.Empty;
-                        var cachedResponse = String.Empty;
+                        var userPrompt = string.Empty;
+                        var cachedResponse = string.Empty;
                         var refreshCache = false;
-                        
+
                         bool.TryParse(GetInputValue(inputs, "RefreshCache"), out refreshCache);
 
-                        //map input properties in smo to userPrompt
+                        // Map input properties in SMO to userPrompt.
                         userPrompt = MapInputPropertiesToJson(inputPropsJson, inputs);
 
+                        // --- File Attachment Processing ---
+                        // Retrieve the file attachment XML (if any)
+                        string fileAttachmentXml = GetInputValue(inputs, "FileAttachement");
+                        // Initialize an attachments dictionary for base64 image URIs.
+                        Dictionary<string, string> imageAttachments = null;
+                        if (!string.IsNullOrWhiteSpace(fileAttachmentXml))
+                        {
+                            // Parse the XML fragment.
+                            string fileAttachmentFilename = string.Empty;
+                            string fileAttachmentContent = string.Empty;
+                            try
+                            {
+                                var xmlDoc = System.Xml.Linq.XDocument.Parse(fileAttachmentXml);
+                                var fileElement = xmlDoc.Element("file");
+                                if (fileElement != null)
+                                {
+                                    fileAttachmentFilename = fileElement.Element("name")?.Value;
+                                    fileAttachmentContent = fileElement.Element("content")?.Value;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                throw new Exception("Error parsing FileAttachement XML: " + ex.Message, ex);
+                            }
+                            if (string.IsNullOrWhiteSpace(fileAttachmentFilename) || string.IsNullOrWhiteSpace(fileAttachmentContent))
+                            {
+                                throw new Exception("FileAttachement XML is missing the Name or Content element.");
+                            }
+                            try
+                            {
+                                // Process the file attachment using DocumentProcessor.
+                                var dpResult = DocumentProcessing.ProcessFile(fileAttachmentFilename, fileAttachmentContent);
+                                // Append the processed text (which includes placeholders) to the user prompt.
+                                userPrompt += "\nAttached Document: " + dpResult.ProcessedText;
+                                imageAttachments = dpResult.ImageAttachments;
+                                // Optionally: you can log dpResult.TokenCount or enforce a token limit here.
+                            }
+                            catch (Exception ex)
+                            {
+                                throw new Exception("Error processing file attachment: " + ex.Message, ex);
+                            }
+                        }
+                        // --- End File Attachment Processing ---
+
+                        // Check the cache if enabled and no refresh is requested
                         if (useCache && !refreshCache)
                         {
                             cachedResponse = GetCachedResponse(userPrompt);
@@ -176,19 +229,18 @@ namespace Nintex.K2
                         string finalContentJson;
                         if (!string.IsNullOrEmpty(cachedResponse))
                         {
-                            // Use cached response
+                            // Use cached response.
                             finalContentJson = cachedResponse;
                             if (returnAsList)
                             {
-                                // Handle as list
+                                // Handle as list.
                                 HandleListResponse(finalContentJson, returnPropsList, outputs, serviceObject);
                             }
                             else
                             {
-                                // Single response
+                                // Single response.
                                 serviceObject.Properties.InitResultTable();
                                 SetOutputValue(outputs, "FullResponse", finalContentJson);
-
                                 try
                                 {
                                     JObject innerJson = JObject.Parse(finalContentJson);
@@ -201,18 +253,17 @@ namespace Nintex.K2
                                 }
                                 catch (JsonReaderException)
                                 {
-                                    // Not valid JSON - no properties extracted
+                                    // Not valid JSON - no properties extracted.
                                 }
-
                                 serviceObject.Properties.BindPropertiesToResultTable();
                             }
                         }
                         else
                         {
-                            // Call the OpenAI API
-                            var responseJson = CallOpenAIAPI(apiKey, systemPrompt, model, userPrompt, endpointUrl);
+                            // Call the OpenAI API with attachments (if any).
+                            var responseJson = CallOpenAIAPI(apiKey, systemPrompt, model, userPrompt, endpointUrl, imageAttachments);
 
-                            // Parse response to get content
+                            // Parse response to extract content.
                             JObject jsonObj;
                             string contentString = null;
                             try
@@ -223,7 +274,7 @@ namespace Nintex.K2
                             }
                             catch (JsonReaderException)
                             {
-                                // Could not parse top-level, just return raw
+                                // Could not parse top-level; just return raw.
                                 serviceObject.Properties.InitResultTable();
                                 SetOutputValue(outputs, "FullResponse", responseJson);
                                 serviceObject.Properties.BindPropertiesToResultTable();
@@ -232,7 +283,7 @@ namespace Nintex.K2
 
                             finalContentJson = contentString;
 
-                            // If caching is enabled and not explicitly refreshing, store the result
+                            // Cache the response if enabled.
                             if (useCache && !string.IsNullOrEmpty(finalContentJson))
                             {
                                 CacheResponse(userPrompt, finalContentJson, cacheDuration);
@@ -240,15 +291,14 @@ namespace Nintex.K2
 
                             if (returnAsList)
                             {
-                                // Handle as list
+                                // Handle as list.
                                 HandleListResponse(finalContentJson, returnPropsList, outputs, serviceObject);
                             }
                             else
                             {
-                                // Single row
+                                // Single row.
                                 serviceObject.Properties.InitResultTable();
                                 SetOutputValue(outputs, "FullResponse", finalContentJson);
-
                                 try
                                 {
                                     JObject innerJson = JObject.Parse(finalContentJson);
@@ -261,7 +311,7 @@ namespace Nintex.K2
                                 }
                                 catch (JsonReaderException)
                                 {
-                                    // The content wasn't valid JSON, no properties extracted
+                                    // The content wasn't valid JSON; no properties extracted.
                                 }
                                 serviceObject.Properties.BindPropertiesToResultTable();
                             }
@@ -270,9 +320,8 @@ namespace Nintex.K2
                     }
                 case METHOD_INVALIDATE_CACHE:
                     {
-                        // Clear entire cache for this service instance
+                        // Clear entire cache for this service instance.
                         InvalidateAllCacheEntries();
-                        // No output, just return
                         break;
                     }
             }
@@ -385,15 +434,31 @@ namespace Nintex.K2
             }
         }
 
-        private string CallOpenAIAPI(string apiKey, string systemPrompt, string model, string userPrompt, string endpointUrl)
+        private string CallOpenAIAPI(string apiKey, string systemPrompt, string model, string userPrompt, string endpointUrl, Dictionary<string, string> attachments)
         {
+            // Build the content for the "user" message.
+            // Start with the text portion.
+            var userContent = new List<object>();
+            userContent.Add(new { type = "text", text = userPrompt });
+
+            // Add each attachment as an image_url object.
+            if (attachments != null && attachments.Any())
+            {
+                foreach (var att in attachments.Values)
+                {
+                    // Construct a data URI assuming PNG format; adjust if needed.
+                    string dataUri = $"data:image/png;base64,{att}";
+                    userContent.Add(new { type = "image_url", image_url = new { url = dataUri } });
+                }
+            }
+
             var requestBody = new
             {
                 model = model,
-                messages = new[]
+                messages = new object[]
                 {
-                    new { role = "system", content = systemPrompt },
-                    new { role = "user", content = userPrompt }
+            new { role = "system", content = systemPrompt },
+            new { role = "user", content = userContent }
                 }
             };
 
