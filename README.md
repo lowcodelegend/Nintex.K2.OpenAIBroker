@@ -8,6 +8,7 @@ This service broker allows Nintex K2 to interact with an OpenAI-compatible compl
 - Caching options for optimized performance.
 - Configurable API endpoints, models, and other parameters.
 - Supports both single and list result outputs.
+- File support for .txt, .csv, excel, word, pdf, and images is working but currently in the "dev" branch of the project
 
 ## Prerequisites
 - Nintex K2 installed and configured.
