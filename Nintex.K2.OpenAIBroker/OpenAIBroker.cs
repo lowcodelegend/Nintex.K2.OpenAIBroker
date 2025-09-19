@@ -230,7 +230,7 @@ namespace Nintex.K2
                                 return;
                             }
 
-                            var jsonSubstring = JsonSnip.ExtractFirstJsonObject(contentString, stripNoise: true, mustParse: true);
+                            var jsonSubstring = JsonSnip.ExtractFirstJsonValue(contentString, stripNoise: true, mustParse: true);
                             finalContentJson = jsonSubstring;
 
                             // If caching is enabled and not explicitly refreshing, store the result
