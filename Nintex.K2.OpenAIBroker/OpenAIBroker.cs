@@ -230,7 +230,8 @@ namespace Nintex.K2
                                 return;
                             }
 
-                            finalContentJson = contentString;
+                            var jsonSubstring = JsonSnip.ExtractFirstJsonObject(contentString, stripNoise: true, mustParse: true);
+                            finalContentJson = jsonSubstring;
 
                             // If caching is enabled and not explicitly refreshing, store the result
                             if (useCache && !string.IsNullOrEmpty(finalContentJson))
@@ -553,7 +554,6 @@ namespace Nintex.K2
             json.Append(" }");
             return json.ToString();
         }
-
 
         public override void Extend()
         {
