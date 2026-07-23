@@ -125,7 +125,6 @@ namespace Nintex.K2
             var inputPropsList = GetJsonPropertiesFromConfig(this.Service.ServiceConfiguration[CONFIG_INPUT_PROPS_LIST].ToString());
             var inputPropsJson = ParseCSVToJson(this.Service.ServiceConfiguration[CONFIG_INPUT_PROPS_LIST].ToString());
             var returnPropsList = GetJsonPropertiesFromConfig(this.Service.ServiceConfiguration[CONFIG_RETURN_PROPS_LIST].ToString());
-            var ReturnListjson = ParseCSVToJson(this.Service.ServiceConfiguration[CONFIG_RETURN_PROPS_LIST].ToString());
 
             var useCache = false;
             bool.TryParse(this.Service.ServiceConfiguration[CONFIG_USE_LITEDB_CACHE]?.ToString(), out useCache);
@@ -135,19 +134,11 @@ namespace Nintex.K2
 
             bool returnAsList = false;
             bool.TryParse(this.Service.ServiceConfiguration[CONFIG_RETURN_AS_LIST]?.ToString(), out returnAsList);
-            
-            systemPrompt += "\nDecline to responsd and give reason if the request is not on the topic: " + this.Service.ServiceConfiguration[CONFIG_CHAT_TOPIC].ToString();
-            systemPrompt += "\nReturn only JSON.  Return the JSON minified to save tokens.";
-            if (returnAsList)
-            {
-                systemPrompt += $"\nReturn as JSON array of the return list object: [{ReturnListjson}]";
-            }
-            else
-            {
-                systemPrompt += $"\nReturn a single record JSON object like this: {ReturnListjson}";
-            }
 
-
+            systemPrompt += "\nDecline to respond and give a reason if the request is not on the topic: " + this.Service.ServiceConfiguration[CONFIG_CHAT_TOPIC].ToString();
+            systemPrompt += returnAsList
+                ? "\nReturn one or more result records."
+                : "\nReturn exactly one result record.";
 
             ServiceObject serviceObject = Service.ServiceObjects[0];
             var currentMethod = serviceObject.Methods[0];
@@ -210,7 +201,14 @@ namespace Nintex.K2
                         else
                         {
                             // Call the OpenAI API
-                            var responseJson = CallOpenAIAPI(apiKey, systemPrompt, model, userPrompt, endpointUrl);
+                            var responseJson = CallOpenAIAPI(
+                                apiKey,
+                                systemPrompt,
+                                model,
+                                userPrompt,
+                                endpointUrl,
+                                returnPropsList,
+                                returnAsList);
 
                             // Parse response to get content
                             JObject jsonObj;
@@ -386,17 +384,25 @@ namespace Nintex.K2
             }
         }
 
-        private string CallOpenAIAPI(string apiKey, string systemPrompt, string model, string userPrompt, string endpointUrl)
+        private string CallOpenAIAPI(
+            string apiKey,
+            string systemPrompt,
+            string model,
+            string userPrompt,
+            string endpointUrl,
+            IEnumerable<string> returnProperties,
+            bool returnAsList)
         {
-            var requestBody = new
-            {
-                model = model,
-                messages = new[]
-                {
-                    new { role = "system", content = systemPrompt },
-                    new { role = "user", content = userPrompt }
-                }
-            };
+            var requestBody = new JObject();
+            requestBody["model"] = model;
+            requestBody["messages"] = new JArray(
+                new JObject(
+                    new JProperty("role", "system"),
+                    new JProperty("content", systemPrompt)),
+                new JObject(
+                    new JProperty("role", "user"),
+                    new JProperty("content", userPrompt)));
+            requestBody["response_format"] = BuildResponseFormat(returnProperties, returnAsList);
 
             string requestJson = JsonConvert.SerializeObject(requestBody);
 
@@ -406,12 +412,68 @@ namespace Nintex.K2
                 client.DefaultRequestHeaders.Add("User-Agent", "K2OpenAIBroker/1.0");
 
                 var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
-                var response = client.PostAsync(endpointUrl, content).Result;
-                response.EnsureSuccessStatusCode();
+                using (var response = client.PostAsync(endpointUrl, content).Result)
+                {
+                    var responseContent = response.Content.ReadAsStringAsync().Result;
 
-                var responseContent = response.Content.ReadAsStringAsync().Result;
-                return responseContent;
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        const int maxErrorLength = 4000;
+                        var errorDetails = responseContent ?? string.Empty;
+                        if (errorDetails.Length > maxErrorLength)
+                        {
+                            errorDetails = errorDetails.Substring(0, maxErrorLength) + "...";
+                        }
+
+                        throw new HttpRequestException(
+                            $"OpenAI-compatible API returned HTTP {(int)response.StatusCode} " +
+                            $"({response.ReasonPhrase}). Response: {errorDetails}");
+                    }
+
+                    return responseContent;
+                }
             }
+        }
+
+        private JObject BuildResponseFormat(IEnumerable<string> returnProperties, bool returnAsList)
+        {
+            var propertyNames = (returnProperties ?? Enumerable.Empty<string>())
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Select(name => name.Trim())
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+            var properties = new JObject();
+            var required = new JArray();
+            foreach (var propertyName in propertyNames)
+            {
+                properties[propertyName] = new JObject(new JProperty("type", "string"));
+                required.Add(propertyName);
+            }
+
+            var recordSchema = new JObject(
+                new JProperty("type", "object"),
+                new JProperty("properties", properties),
+                new JProperty("required", required),
+                new JProperty("additionalProperties", false));
+
+            JToken outputSchema = recordSchema;
+            if (returnAsList)
+            {
+                outputSchema = new JObject(
+                    new JProperty("type", "array"),
+                    new JProperty("items", recordSchema),
+                    new JProperty("minItems", 1));
+            }
+
+            return new JObject(
+                new JProperty("type", "json_schema"),
+                new JProperty(
+                    "json_schema",
+                    new JObject(
+                        new JProperty("name", "k2_response"),
+                        new JProperty("strict", true),
+                        new JProperty("schema", outputSchema))));
         }
 
         // LiteDB cache logic
